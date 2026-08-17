@@ -1,0 +1,71 @@
+{
+  "name": "pngoo-desktop",
+  "version": "1.1.1",
+  "description": "A compact Windows desktop app for strict lossless PNG compression.",
+  "main": "electron/main.cjs",
+  "author": "Mychael",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "build": "electron-builder --win nsis zip --x64",
+    "build:portable": "electron-builder --win zip --x64"
+  },
+  "devDependencies": {
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "io.mychaeldotio.pngoo.desktop",
+    "productName": "PNGoo Desktop",
+    "copyright": "Copyright © 2026 Mychael. Lossless PNG compression powered by Oxipng.",
+    "artifactName": "PNGoo-Portable-${version}-x64.${ext}",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "PNGoo-Setup-${version}-x64.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PNGoo Desktop",
+      "uninstallDisplayName": "PNGoo Desktop",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+ui-smoke.png
+dev-smoke.*
+verify-*/
+

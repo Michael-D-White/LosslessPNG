@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:">
+  <title>PNGoo Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app">
+    <section class="options-grid">
+      <fieldset>
+        <legend>Output</legend>
+        <label class="check-row">
+          <input id="overwriteCheck" type="checkbox" checked>
+          <span>Output to Same Directory (Overwrite PNGs)</span>
+        </label>
+        <label class="check-row">
+          <input id="backupCheck" type="checkbox" checked disabled>
+          <span>Keep Backup Only If Corruption Is Detected</span>
+        </label>
+        <label class="field-label" for="outputPath">Output Directory:</label>
+        <div class="path-row">
+          <input id="outputPath" type="text" readonly placeholder="Choose an output directory">
+          <button id="browseButton" class="button">Browse…</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Compression</legend>
+        <div class="fixed-field">
+          <span>PNG Type:</span>
+          <strong>Original</strong>
+        </div>
+        <div class="fixed-field">
+          <span>Mode:</span>
+          <strong class="lossless"><i></i> Lossless (Fixed)</strong>
+        </div>
+        <div class="engine-note">Oxipng 10.2.0 · Quality is never reduced</div>
+      </fieldset>
+    </section>
+
+    <section class="file-panel">
+      <div class="table-head">
+        <span>File</span>
+        <span>Original</span>
+        <span>Optimised</span>
+        <span>Status</span>
+      </div>
+      <div id="fileList" class="file-list" role="listbox" aria-label="PNG files">
+        <div id="emptyState" class="empty-state">
+          <div class="empty-icon">PNG</div>
+          <strong>No PNG files added</strong>
+          <span>Use “Add Files…” or “Add Folder…” below.</span>
+        </div>
+      </div>
+      <div class="progress-line"><div id="progressBar"></div></div>
+    </section>
+
+    <footer>
+      <div class="footer-left">
+        <button id="removeButton" class="button" disabled>Remove</button>
+        <span id="summaryText">0 files · 0 B</span>
+      </div>
+      <div class="footer-right">
+        <button id="addFolderButton" class="button">Add Folder…</button>
+        <button id="addFilesButton" class="button">Add Files…</button>
+        <button id="goButton" class="button primary" disabled>Go!</button>
+      </div>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>

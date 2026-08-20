@@ -8,10 +8,10 @@ LosslessPNG is a compact dark-mode Windows application for compressing PNG image
 
 ## Download
 
-Download the latest verified build from the [v1.1.1 release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.1):
+Download the latest verified build from the [v1.1.2 release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.2):
 
-- [Windows installer](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.1/PNGoo-Setup-1.1.1-x64.exe)
-- [Portable ZIP](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.1/PNGoo-Portable-1.1.1-x64.zip)
+- [Windows installer](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.2/PNGoo-Setup-1.1.2-x64.exe)
+- [Portable ZIP](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.2/PNGoo-Portable-1.1.2-x64.zip)
 
 The portable edition requires no installation. Extract the entire ZIP, then run `PNGoo Desktop.exe` from the extracted folder.
 
@@ -20,6 +20,7 @@ The portable edition requires no installation. Extract the entire ZIP, then run 
 - Strict lossless PNG recompression with Oxipng 10.2.0
 - Fixed compression settings, so there is nothing technical to configure
 - Add individual PNG files or scan a folder and its subfolders
+- Drag and drop whole folders or PNG files anywhere onto the app
 - Overwrite the original files or write compressed copies to another directory
 - Never replaces a file when the result would be larger than the original
 - Verifies the installed result by size, dimensions, and SHA-256 hash
@@ -29,7 +30,7 @@ The portable edition requires no installation. Extract the entire ZIP, then run 
 ## How to use
 
 1. Open LosslessPNG.
-2. Select **Add Files…** for individual images or **Add Folder…** to scan a folder recursively.
+2. Drag a folder onto the app, or select **Add Files…** or **Add Folder…**. Dropped and selected folders are scanned recursively.
 3. Choose **Output to Same Directory** to replace the originals, or select a separate output directory.
 4. Press **Go!** and wait for the completion summary.
 
@@ -70,14 +71,14 @@ The finished installer and portable ZIP are written to the `dist` directory. The
 
 ## Verification
 
-Version 1.1.1 passed:
+Version 1.1.2 passed:
 
 - Seven automated compression and recovery tests
 - Portable application launch testing
 - Installer installation, installed launch, and uninstallation testing
 - Microsoft Defender scanning of both release packages
 
-The SHA-256 hashes of the published files are included on the [release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.1).
+The SHA-256 hashes of the published files are included on the [release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.2).
 
 ## License
 

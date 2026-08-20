@@ -1,6 +1,6 @@
 {
   "name": "pngoo-desktop",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "A compact Windows desktop app for strict lossless PNG compression.",
   "main": "electron/main.cjs",
   "author": "Mychael",

@@ -4,7 +4,10 @@ const elements = {
   outputPath: document.querySelector('#outputPath'),
   browse: document.querySelector('#browseButton'),
   list: document.querySelector('#fileList'),
+  panel: document.querySelector('.file-panel'),
   empty: document.querySelector('#emptyState'),
+  dropOverlay: document.querySelector('#dropOverlay'),
+  dropTitle: document.querySelector('#dropTitle'),
   remove: document.querySelector('#removeButton'),
   addFolder: document.querySelector('#addFolderButton'),
   addFiles: document.querySelector('#addFilesButton'),
@@ -17,6 +20,7 @@ const elements = {
 let items = [];
 const selected = new Set();
 let running = false;
+let scanning = false;
 let cancelling = false;
 let outputDirectory = null;
 let toastTimer = null;
@@ -45,13 +49,14 @@ function showToast(message, error = false) {
 
 function updateControls() {
   const overwrite = elements.overwrite.checked;
-  elements.outputPath.disabled = overwrite || running;
-  elements.browse.disabled = overwrite || running;
+  const busy = running || scanning;
+  elements.outputPath.disabled = overwrite || busy;
+  elements.browse.disabled = overwrite || busy;
   elements.backup.disabled = true;
-  elements.addFiles.disabled = running;
-  elements.addFolder.disabled = running;
-  elements.remove.disabled = running || selected.size === 0;
-  elements.go.disabled = cancelling || (!running && (items.length === 0 || (!overwrite && !outputDirectory)));
+  elements.addFiles.disabled = busy;
+  elements.addFolder.disabled = busy;
+  elements.remove.disabled = busy || selected.size === 0;
+  elements.go.disabled = scanning || cancelling || (!running && (items.length === 0 || (!overwrite && !outputDirectory)));
   elements.go.textContent = cancelling ? 'Stopping…' : running ? 'Cancel' : 'Go!';
 }
 
@@ -115,6 +120,70 @@ function addItems(newItems) {
   renderList();
   if (added === 0 && newItems.length) showToast('Those files are already in the list.');
 }
+
+function showDropOverlay(title, active = true) {
+  elements.dropTitle.textContent = title;
+  elements.dropOverlay.classList.toggle('hidden', !active);
+  elements.panel.classList.toggle('drag-active', active);
+}
+
+let dragDepth = 0;
+
+window.addEventListener('dragenter', event => {
+  event.preventDefault();
+  if (!event.dataTransfer?.types?.includes('Files') || running || scanning) return;
+  dragDepth += 1;
+  showDropOverlay('Drop folder or PNG files');
+});
+
+window.addEventListener('dragover', event => {
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = running || scanning ? 'none' : 'copy';
+});
+
+window.addEventListener('dragleave', event => {
+  event.preventDefault();
+  if (dragDepth > 0) dragDepth -= 1;
+  if (dragDepth === 0 && !scanning) showDropOverlay('', false);
+});
+
+window.addEventListener('drop', async event => {
+  event.preventDefault();
+  dragDepth = 0;
+  if (running || scanning) {
+    showDropOverlay('', false);
+    showToast('Wait for the current operation to finish before adding more images.', true);
+    return;
+  }
+
+  const paths = Array.from(event.dataTransfer?.files || [])
+    .map(file => {
+      try { return window.pngoo.getPathForFile(file); }
+      catch { return ''; }
+    })
+    .filter(Boolean);
+  if (!paths.length) {
+    showDropOverlay('', false);
+    showToast('Windows did not provide a usable folder or file path.', true);
+    return;
+  }
+
+  scanning = true;
+  showDropOverlay('Scanning dropped folder…');
+  updateControls();
+  try {
+    const found = await window.pngoo.describeDroppedPaths(paths);
+    addItems(found);
+    if (!found.length) showToast('No PNG files were found in the dropped items.');
+    else showToast(`Added ${found.length.toLocaleString()} PNG file${found.length === 1 ? '' : 's'}.`);
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    scanning = false;
+    showDropOverlay('', false);
+    updateControls();
+  }
+});
 
 elements.addFiles.addEventListener('click', async () => {
   try { addItems(await window.pngoo.pickFiles()); }

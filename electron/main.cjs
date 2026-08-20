@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } = require('electron');
-const { compressFiles, describeFiles, listPngFiles } = require('./compression.cjs');
+const { compressFiles, describeFiles, describePaths, listPngFiles } = require('./compression.cjs');
 
 let mainWindow;
 let activeState = null;
@@ -44,7 +44,9 @@ function createWindow() {
           title: document.title,
           mode: document.querySelector('.lossless')?.textContent.trim(),
           addFilesLabel: document.querySelector('#addFilesButton')?.textContent,
-          bridgeReady: typeof window.pngoo?.startCompression === 'function'
+          bridgeReady: typeof window.pngoo?.startCompression === 'function',
+          dropBridgeReady: typeof window.pngoo?.getPathForFile === 'function' && typeof window.pngoo?.describeDroppedPaths === 'function',
+          dropHintReady: document.querySelector('#emptyState span')?.textContent.includes('Drop a folder') === true
         })`);
         fs.writeFileSync(smokeOutput, JSON.stringify({
           ...renderer,
@@ -91,6 +93,10 @@ ipcMain.handle('folder:pick', async () => {
   if (result.canceled) return [];
   const root = result.filePaths[0];
   return describeFiles(await listPngFiles(root), root);
+});
+
+ipcMain.handle('paths:describe', async (_event, droppedPaths) => {
+  return describePaths(Array.isArray(droppedPaths) ? droppedPaths : []);
 });
 
 ipcMain.handle('output:pick', async () => {

@@ -74,6 +74,36 @@ async function describeFiles(files, root) {
   return items;
 }
 
+async function describePaths(droppedPaths) {
+  const results = [];
+  const seen = new Set();
+  for (const droppedPath of droppedPaths) {
+    if (typeof droppedPath !== 'string' || !droppedPath.trim()) continue;
+    const resolved = path.resolve(droppedPath);
+    let stat;
+    try {
+      stat = await fsp.stat(resolved);
+    } catch {
+      continue;
+    }
+
+    let described = [];
+    if (stat.isDirectory()) {
+      described = await describeFiles(await listPngFiles(resolved), resolved);
+    } else if (stat.isFile() && path.extname(resolved).toLowerCase() === '.png') {
+      described = await describeFiles([resolved], path.dirname(resolved));
+    }
+
+    for (const item of described) {
+      const key = item.path.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push(item);
+    }
+  }
+  return results;
+}
+
 function runEngine(enginePath, args, state) {
   return new Promise((resolve, reject) => {
     const child = spawn(enginePath, args, {
@@ -364,6 +394,7 @@ module.exports = {
   PNG_SIGNATURE,
   compressFiles,
   describeFiles,
+  describePaths,
   listPngFiles,
   readPngMetadata,
   replaceSafely,

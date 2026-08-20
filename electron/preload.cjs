@@ -1,9 +1,11 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('pngoo', {
   pickFiles: () => ipcRenderer.invoke('files:pick'),
   pickFolder: () => ipcRenderer.invoke('folder:pick'),
   pickOutput: () => ipcRenderer.invoke('output:pick'),
+  getPathForFile: file => webUtils.getPathForFile(file),
+  describeDroppedPaths: paths => ipcRenderer.invoke('paths:describe', paths),
   startCompression: payload => ipcRenderer.invoke('compression:start', payload),
   cancelCompression: () => ipcRenderer.send('compression:cancel'),
   openPath: targetPath => ipcRenderer.invoke('path:open', targetPath),

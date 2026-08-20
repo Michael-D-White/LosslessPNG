@@ -1,7 +1,8 @@
 node_modules/
 dist/
 *.log
+*.stdout
+*.stderr
 ui-smoke.png
 dev-smoke.*
 verify-*/
-

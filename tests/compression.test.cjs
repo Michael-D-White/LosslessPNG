@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 const {
   compressFiles,
   describeFiles,
+  describePaths,
   listPngFiles,
   readPngMetadata,
   replaceSafely,
@@ -127,6 +128,21 @@ test('PNG metadata reader reports dimensions', async t => {
   const file = path.join(root, 'sample.png');
   await fsp.writeFile(file, makePng(37, 19));
   assert.deepEqual(await readPngMetadata(file), { width: 37, height: 19 });
+});
+
+test('dropped folders are scanned recursively and retain their folder root', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-drop-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const nested = path.join(root, 'nested');
+  await fsp.mkdir(nested);
+  await fsp.writeFile(path.join(root, 'one.png'), makePng(12, 9));
+  await fsp.writeFile(path.join(nested, 'two.PNG'), makePng(8, 6));
+  await fsp.writeFile(path.join(root, 'ignored.jpg'), makePng(4, 4));
+
+  const items = await describePaths([root]);
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.map(item => item.path), [path.join(nested, 'two.PNG'), path.join(root, 'one.png')].sort((a, b) => a.localeCompare(b)));
+  assert.equal(items.every(item => item.root === path.resolve(root)), true);
 });
 
 test('Oxipng strict mode produces byte-identical decoded pixels', async t => {

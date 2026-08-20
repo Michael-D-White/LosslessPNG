@@ -10,6 +10,7 @@ const {
   cancelActiveEngines,
   compressFiles,
   createCompressionPlan,
+  createStagingBatches,
   describeFiles,
   describePaths,
   listPngFiles,
@@ -112,6 +113,17 @@ test('parallel plan balances workers without oversubscribing logical processors'
   assert.deepEqual(createCompressionPlan(12, 20), { workers: 4, threadsPerWorker: 5 });
   assert.deepEqual(createCompressionPlan(2, 20), { workers: 2, threadsPerWorker: 10 });
   assert.deepEqual(createCompressionPlan(12, 4), { workers: 1, threadsPerWorker: 4 });
+});
+
+test('staging batches respect file, command-line, and temporary-byte limits', () => {
+  const tasks = Array.from({ length: 7 }, (_, index) => ({
+    tempPath: `C:\\textures\\${index}-${'x'.repeat(20)}.png`,
+    originalStat: { size: 10 }
+  }));
+  const batches = createStagingBatches(tasks, 150, 3, 25);
+
+  assert.equal(batches.length, 4);
+  assert.deepEqual(batches.map(batch => batch.length), [2, 2, 2, 1]);
 });
 
 test('cancellation stops every active compression worker', () => {
@@ -318,4 +330,100 @@ test('parallel workflow completes every item and reports monotonic progress', as
   assert.equal(result.threadsPerWorker, expectedPlan.threadsPerWorker);
   assert.deepEqual(progress, [1, 2, 3, 4, 5, 6, 7, 8]);
   assert.equal(state.children.size, 0);
+});
+
+test('batch workflow uses one engine run for many tiny files and isolates an invalid PNG', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-batch-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const items = [];
+  const original = makePng(64, 64);
+  for (let index = 0; index < 39; index += 1) {
+    const file = path.join(root, `texture-${index}.png`);
+    await fsp.writeFile(file, original);
+    items.push({ path: file, root });
+  }
+  const invalid = path.join(root, 'invalid.png');
+  await fsp.writeFile(invalid, Buffer.from('not a png'));
+  items.push({ path: invalid, root });
+
+  const progress = [];
+  const state = { cancelled: false, child: null, children: new Set() };
+  const result = await compressFiles({ items, overwrite: true }, engine, state, update => progress.push(update));
+
+  assert.equal(result.mode, 'batched');
+  assert.equal(result.engineRuns, 1);
+  assert.equal(result.completed, 40);
+  assert.equal(result.compressed, 39);
+  assert.equal(result.failed, 1);
+  assert.equal(progress.length, 1);
+  assert.equal(progress[0].current, 40);
+  assert.equal(progress[0].results.length, 40);
+  assert.deepEqual(decodeRgbaPng(await fsp.readFile(items[0].path)), decodeRgbaPng(original));
+  assert.deepEqual(await fsp.readFile(invalid), Buffer.from('not a png'));
+  assert.equal(state.children.size, 0);
+  const remainingNames = await fsp.readdir(root);
+  assert.equal(remainingNames.some(name => /pngoo-(?:batch|temp|rollback|recovery)/i.test(name)), false);
+});
+
+test('batch workflow writes verified outputs to a separate directory and removes staging data', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-batch-source-'));
+  const outputRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-batch-output-'));
+  t.after(() => Promise.all([
+    fsp.rm(root, { recursive: true, force: true }),
+    fsp.rm(outputRoot, { recursive: true, force: true })
+  ]));
+  const original = makePng(64, 64);
+  const items = [];
+  for (let index = 0; index < 33; index += 1) {
+    const file = path.join(root, `texture-${index}.png`);
+    await fsp.writeFile(file, original);
+    items.push({ path: file, root });
+  }
+
+  const result = await compressFiles({ items, overwrite: false, outputDirectory: outputRoot }, engine, {
+    cancelled: false,
+    child: null,
+    children: new Set()
+  }, () => {});
+
+  assert.equal(result.mode, 'batched');
+  assert.equal(result.engineRuns, 1);
+  assert.equal(result.compressed, 33);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(await fsp.readFile(items[0].path), original);
+  assert.equal(result.results.every(entry => entry.destination && fs.existsSync(entry.destination)), true);
+  assert.deepEqual(decodeRgbaPng(await fsp.readFile(result.results[0].destination)), decodeRgbaPng(original));
+  const outputNames = await fsp.readdir(outputRoot);
+  assert.equal(outputNames.some(name => name.startsWith('.pngoo-batch-')), false);
+});
+
+test('cancelling an active batch leaves originals unchanged and removes staging data', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-batch-cancel-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const original = makePng(512, 384);
+  const items = [];
+  for (let index = 0; index < 32; index += 1) {
+    const file = path.join(root, `texture-${index}.png`);
+    await fsp.writeFile(file, original);
+    items.push({ path: file, root });
+  }
+  const state = { cancelled: false, child: null, children: new Set() };
+  const compression = compressFiles({ items, overwrite: true }, engine, state, () => {});
+  let observedEngine = false;
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (state.children.size) {
+      observedEngine = true;
+      cancelActiveEngines(state);
+      break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+  const result = await compression;
+
+  assert.equal(observedEngine, true);
+  assert.equal(result.cancelled, true);
+  assert.deepEqual(await fsp.readFile(items[0].path), original);
+  assert.equal(state.children.size, 0);
+  const remainingNames = await fsp.readdir(root);
+  assert.equal(remainingNames.some(name => name.startsWith('.pngoo-batch-')), false);
 });

@@ -83,7 +83,8 @@ legend { padding: 0 6px; color: #d7dbe0; font-weight: 600; }
 .table-head span { padding: 6px 8px; border-right: 1px solid var(--line); }
 .table-head span:last-child { border-right: 0; }
 .file-list { min-height: 0; overflow: auto; position: relative; }
-.file-row { min-height: 27px; border-bottom: 1px solid #202329; color: #d4d8de; cursor: default; user-select: none; }
+.file-row { height: 27px; min-height: 27px; border-bottom: 1px solid #202329; color: #d4d8de; cursor: default; user-select: none; }
+.list-spacer { width: 1px; min-height: 0; pointer-events: none; }
 .file-row:hover { background: #1d2126; }
 .file-row.selected { background: var(--selection); }
 .file-row span { min-width: 0; padding: 5px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-right: 1px solid #25282e; }

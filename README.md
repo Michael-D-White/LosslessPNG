@@ -8,10 +8,10 @@ LosslessPNG is a compact dark-mode Windows application for compressing PNG image
 
 ## Download
 
-Download the latest verified build from the [v1.1.3 release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.3):
+Download the latest verified build from the [v1.1.4 release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.4):
 
-- [Windows installer](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.3/PNGoo-Setup-1.1.3-x64.exe)
-- [Portable ZIP](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.3/PNGoo-Portable-1.1.3-x64.zip)
+- [Windows installer](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.4/PNGoo-Setup-1.1.4-x64.exe)
+- [Portable ZIP](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.4/PNGoo-Portable-1.1.4-x64.zip)
 
 The portable edition requires no installation. Extract the entire ZIP, then run `PNGoo Desktop.exe` from the extracted folder.
 
@@ -19,12 +19,14 @@ The portable edition requires no installation. Extract the entire ZIP, then run 
 
 - Strict lossless PNG recompression with Oxipng 10.2.0
 - Controlled parallel compression that automatically balances workers across the available CPU threads
+- Multi-file Oxipng batches for very large collections of small textures
+- A virtualized file table that remains responsive with hundreds of thousands of entries
 - Fixed compression settings, so there is nothing technical to configure
 - Add individual PNG files or scan a folder and its subfolders
 - Drag and drop whole folders or PNG files anywhere onto the app
 - Overwrite the original files or write compressed copies to another directory
 - Never replaces a file when the result would be larger than the original
-- Verifies the installed result by size, dimensions, and SHA-256 hash
+- Verifies ordinary jobs by SHA-256, size, and dimensions; huge batches use Oxipng validation plus atomic file identity, size, and dimensions to avoid millions of redundant file reads
 - Restores the original automatically if replacement verification detects corruption
 - Compact dark interface inspired by the original PNGoo layout
 
@@ -74,14 +76,14 @@ To compare the sequential baseline with the balanced parallel plans on your own 
 
 ## Verification
 
-Version 1.1.3 passed:
+Version 1.1.4 passed:
 
 - Seven automated compression and recovery tests
 - Portable application launch testing
 - Installer installation, installed launch, and uninstallation testing
 - Microsoft Defender scanning of both release packages
 
-The SHA-256 hashes of the published files are included on the [release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.3).
+The SHA-256 hashes of the published files are included on the [release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.4).
 
 ## License
 

@@ -6,6 +6,10 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const BATCH_MODE_MINIMUM = 32;
+const MAXIMUM_BATCH_FILES = 256;
+const MAXIMUM_BATCH_CHARACTERS = 24000;
+const MAXIMUM_STAGED_BYTES = 256 * 1024 * 1024;
 
 async function exists(filePath) {
   try {
@@ -25,7 +29,7 @@ async function listPngFiles(root) {
     for (const entry of entries) {
       const fullPath = path.join(folder, entry.name);
       if (entry.isDirectory()) {
-        if (!entry.name.includes(' - PNGoo Backup ')) await visit(fullPath);
+        if (!entry.name.includes(' - PNGoo Backup ') && !entry.name.startsWith('.pngoo-batch-')) await visit(fullPath);
       } else if (
         entry.isFile() &&
         path.extname(entry.name).toLowerCase() === '.png' &&
@@ -56,23 +60,27 @@ async function readPngMetadata(filePath) {
 
 async function describeFiles(files, root) {
   const unique = [...new Set(files.map(file => path.resolve(file)))];
-  const items = [];
-  for (const file of unique) {
-    const stat = await fsp.stat(file);
-    if (!stat.isFile()) continue;
-    const metadata = await readPngMetadata(file);
-    items.push({
-      id: crypto.createHash('sha1').update(file.toLowerCase()).digest('hex'),
-      path: file,
-      root: path.resolve(root || path.dirname(file)),
-      name: path.basename(file),
-      size: stat.size,
-      valid: Boolean(metadata),
-      width: metadata?.width || null,
-      height: metadata?.height || null
-    });
-  }
-  return items;
+  const items = new Array(unique.length);
+  const concurrency = Math.min(32, Math.max(4, (os.availableParallelism?.() || os.cpus().length || 1) * 2));
+  await mapWithConcurrency(unique, concurrency, async (file, index) => {
+    try {
+      const [stat, metadata] = await Promise.all([fsp.stat(file), readPngMetadata(file)]);
+      if (!stat.isFile()) return;
+      items[index] = {
+        id: crypto.createHash('sha1').update(file.toLowerCase()).digest('hex'),
+        path: file,
+        root: path.resolve(root || path.dirname(file)),
+        name: path.basename(file),
+        size: stat.size,
+        valid: Boolean(metadata),
+        width: metadata?.width || null,
+        height: metadata?.height || null
+      };
+    } catch {
+      // A file may disappear while a large folder is being scanned.
+    }
+  });
+  return items.filter(Boolean);
 }
 
 async function describePaths(droppedPaths) {
@@ -128,7 +136,7 @@ function runEngine(enginePath, args, state) {
     });
     child.on('close', code => {
       cleanup();
-      resolve({ code, output: `${stdout} ${stderr}`.trim() });
+      resolve({ code, stdout, stderr, output: `${stdout} ${stderr}`.trim() });
     });
   });
 }
@@ -188,18 +196,19 @@ async function replaceSafely(original, output, token, originalStat, expected, or
     await fsp.rename(original, rollback);
     originalMoved = true;
     await fsp.rename(output, original);
-    await fsp.utimes(original, originalStat.atime, originalStat.mtime);
+    if (!expected.fast) await fsp.utimes(original, originalStat.atime, originalStat.mtime);
     const [installedStat, installedMetadata, installedHash] = await Promise.all([
       fsp.stat(original),
-      readPngMetadata(original),
-      sha256File(original)
+      expected.fast ? Promise.resolve({ width: expected.width, height: expected.height }) : readPngMetadata(original),
+      expected.hash ? sha256File(original) : Promise.resolve(null)
     ]);
     if (
       installedStat.size !== expected.size ||
       !installedMetadata ||
       installedMetadata.width !== expected.width ||
       installedMetadata.height !== expected.height ||
-      installedHash !== expected.hash
+      (expected.ino && installedStat.ino && installedStat.ino !== expected.ino) ||
+      (expected.hash && installedHash !== expected.hash)
     ) {
       corruptionDetected = true;
       throw new Error('Post-write verification detected a corrupted compressed file.');
@@ -211,6 +220,8 @@ async function replaceSafely(original, output, token, originalStat, expected, or
     let restoreError = null;
     let recoveryCopyError = null;
     if (originalMoved && await exists(rollback)) {
+      let rollbackHash = originalHash;
+      if (!rollbackHash) rollbackHash = await sha256File(rollback).catch(() => null);
       if (corruptionDetected) {
         try {
           const candidate = await uniqueRecoveryPath(original);
@@ -224,9 +235,10 @@ async function replaceSafely(original, output, token, originalStat, expected, or
       try {
         if (await exists(original)) await fsp.unlink(original);
         await fsp.rename(rollback, original);
-        if (await sha256File(original) !== originalHash) {
+        if (rollbackHash && await sha256File(original) !== rollbackHash) {
           throw new Error('The restored original did not match its pre-compression hash.');
         }
+        if ((await fsp.stat(original)).size !== originalStat.size) throw new Error('The restored original size did not match.');
         restored = true;
       } catch (recoveryError) {
         restoreError = recoveryError;
@@ -267,6 +279,337 @@ async function uniqueOutputPath(outputDirectory, root, file, claimed) {
   }
 }
 
+async function mapWithConcurrency(items, concurrency, callback) {
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      await callback(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, worker));
+}
+
+function createStagingBatches(
+  tasks,
+  maximumCharacters = MAXIMUM_BATCH_CHARACTERS,
+  maximumFiles = MAXIMUM_BATCH_FILES,
+  maximumBytes = MAXIMUM_STAGED_BYTES
+) {
+  const batches = [];
+  let current = [];
+  let characters = 0;
+  let bytes = 0;
+  for (const task of tasks) {
+    const cost = task.tempPath.length + 3;
+    const size = task.originalStat?.size || 0;
+    if (
+      current.length &&
+      (current.length >= maximumFiles || characters + cost > maximumCharacters || bytes + size > maximumBytes)
+    ) {
+      batches.push(current);
+      current = [];
+      characters = 0;
+      bytes = 0;
+    }
+    current.push(task);
+    characters += cost;
+    bytes += size;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+function parseBatchResults(stdout) {
+  const parsed = JSON.parse(stdout.trim());
+  const entries = Array.isArray(parsed.results) ? parsed.results : [];
+  return new Map(entries.map(entry => [path.resolve(entry.input).toLowerCase(), entry]));
+}
+
+function stagingParent(task, overwrite, outputDirectory) {
+  if (!overwrite) return outputDirectory;
+  const root = path.resolve(task.item.root);
+  return path.parse(root).root.toLowerCase() === path.parse(task.item.path).root.toLowerCase()
+    ? root
+    : path.dirname(task.item.path);
+}
+
+async function createBatchDirectory(parent, token) {
+  await fsp.mkdir(parent, { recursive: true });
+  let index = 1;
+  while (true) {
+    const suffix = index === 1 ? '' : `-${index}`;
+    const candidate = path.join(parent, `.pngoo-batch-${token}${suffix}`);
+    try {
+      await fsp.mkdir(candidate);
+      return candidate;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      index += 1;
+    }
+  }
+}
+
+async function compressFilesBatched(options) {
+  const {
+    items,
+    overwrite,
+    outputDirectory,
+    enginePath,
+    state,
+    onProgress
+  } = options;
+  const processors = Math.max(1, os.availableParallelism?.() || os.cpus().length || 1);
+  const preparationConcurrency = Math.min(32, processors * 2);
+  const verificationConcurrency = Math.min(16, processors);
+  const claimedOutputs = new Set();
+  const results = new Array(items.length);
+  const recoveryFiles = [];
+  const pendingUpdates = [];
+  let completed = 0;
+  let beforeBytes = 0;
+  let afterBytes = 0;
+  let compressed = 0;
+  let kept = 0;
+  let failed = 0;
+  let savedBytes = 0;
+  let engineRuns = 0;
+
+  function record(task, values) {
+    const result = {
+      path: task.item.path,
+      originalBytes: task.originalStat?.size || 0,
+      outputBytes: values.outputBytes ?? null,
+      status: values.status,
+      error: values.error || null,
+      recoveryPath: values.recoveryPath || null,
+      destination: values.status === 'Optimised' ? task.destination : null
+    };
+    results[task.index] = result;
+    pendingUpdates.push(result);
+    completed += 1;
+    return result;
+  }
+
+  function recordFailure(task, error) {
+    const recoveryPath = error?.recoveryPath || null;
+    failed += 1;
+    if (task.originalStat) afterBytes += task.originalStat.size;
+    if (recoveryPath) recoveryFiles.push(recoveryPath);
+    record(task, {
+      status: recoveryPath ? 'Recovered' : 'Failed',
+      error: error?.message || String(error),
+      recoveryPath
+    });
+  }
+
+  function flushProgress() {
+    if (!pendingUpdates.length) return;
+    const batchResults = pendingUpdates.splice(0, pendingUpdates.length);
+    onProgress({
+      current: completed,
+      total: items.length,
+      compressed,
+      kept,
+      failed,
+      savedBytes,
+      result: batchResults[batchResults.length - 1],
+      results: batchResults
+    });
+  }
+
+  async function prepare(index) {
+    const item = items[index];
+    const task = { index, item, originalStat: null, destination: item.path, tempPath: null };
+    try {
+      const [originalStat, inputMetadata] = await Promise.all([
+        fsp.stat(item.path),
+        readPngMetadata(item.path)
+      ]);
+      task.originalStat = originalStat;
+      task.inputMetadata = inputMetadata;
+      beforeBytes += originalStat.size;
+      if (!originalStat.isFile() || !inputMetadata) throw new Error('File contents are not valid PNG data.');
+      if (!overwrite) task.destination = await uniqueOutputPath(outputDirectory, item.root, item.path, claimedOutputs);
+      await fsp.mkdir(path.dirname(task.destination), { recursive: true });
+      return task;
+    } catch (error) {
+      recordFailure(task, error);
+      return null;
+    }
+  }
+
+  async function finalize(task, engineEntry) {
+    if (state.cancelled) {
+      if (await exists(task.tempPath)) await fsp.unlink(task.tempPath).catch(() => {});
+      return;
+    }
+    if (!engineEntry || engineEntry.status !== 'success') {
+      if (await exists(task.tempPath)) await fsp.unlink(task.tempPath).catch(() => {});
+      const detail = engineEntry?.error || engineEntry?.message || 'The batch engine did not return a successful result for this file.';
+      recordFailure(task, new Error(detail));
+      return;
+    }
+
+    try {
+      const [outputStat, outputMetadata] = await Promise.all([
+        fsp.stat(task.tempPath),
+        readPngMetadata(task.tempPath)
+      ]);
+      if (
+        !outputMetadata ||
+        outputMetadata.width !== task.inputMetadata.width ||
+        outputMetadata.height !== task.inputMetadata.height
+      ) {
+        throw new Error('The lossless engine produced an invalid image or changed its dimensions.');
+      }
+      if (outputStat.size >= task.originalStat.size) {
+        await fsp.unlink(task.tempPath);
+        kept += 1;
+        afterBytes += task.originalStat.size;
+        record(task, { status: 'Already optimised' });
+        return;
+      }
+
+      if (state.cancelled) {
+        await fsp.unlink(task.tempPath).catch(() => {});
+        return;
+      }
+      if (overwrite) {
+        await replaceSafely(task.item.path, task.tempPath, `${process.pid}-${Date.now()}-${task.index}`, task.originalStat, {
+          size: outputStat.size,
+          width: outputMetadata.width,
+          height: outputMetadata.height,
+          ino: outputStat.ino,
+          fast: true
+        }, null);
+      } else {
+        await fsp.rename(task.tempPath, task.destination);
+        const installedStat = await fsp.stat(task.destination);
+        if (
+          installedStat.size !== outputStat.size ||
+          (outputStat.ino && installedStat.ino && installedStat.ino !== outputStat.ino)
+        ) {
+          await fsp.unlink(task.destination).catch(() => {});
+          throw new Error('Post-write verification detected a corrupted output file. The source was not changed.');
+        }
+      }
+      compressed += 1;
+      afterBytes += outputStat.size;
+      savedBytes += task.originalStat.size - outputStat.size;
+      record(task, { status: 'Optimised', outputBytes: outputStat.size });
+    } catch (error) {
+      if (task.tempPath && await exists(task.tempPath)) await fsp.unlink(task.tempPath).catch(() => {});
+      recordFailure(task, error);
+    }
+  }
+
+  for (let start = 0; start < items.length && !state.cancelled; start += MAXIMUM_BATCH_FILES) {
+    const indices = Array.from(
+      { length: Math.min(MAXIMUM_BATCH_FILES, items.length - start) },
+      (_, offset) => start + offset
+    );
+    const prepared = new Array(indices.length);
+    await mapWithConcurrency(indices, preparationConcurrency, async (index, position) => {
+      prepared[position] = await prepare(index);
+    });
+
+    const preparedTasks = prepared.filter(Boolean);
+    const groups = new Map();
+    for (const task of preparedTasks) {
+      const parent = stagingParent(task, overwrite, outputDirectory);
+      if (!groups.has(parent)) groups.set(parent, []);
+      groups.get(parent).push(task);
+    }
+    if (!groups.size) flushProgress();
+
+    let groupIndex = 0;
+    for (const [parent, group] of groups) {
+      if (state.cancelled) break;
+      const token = `${process.pid.toString(36)}-${Date.now().toString(36)}-${start.toString(36)}-${groupIndex.toString(36)}`;
+      groupIndex += 1;
+      const batchDirectory = await createBatchDirectory(parent, token);
+      for (const task of group) task.tempPath = path.join(batchDirectory, `${task.index.toString(36)}.png`);
+      const stagingBatches = createStagingBatches(group);
+      try {
+        for (const batch of stagingBatches) {
+          if (state.cancelled) break;
+          await mapWithConcurrency(batch, preparationConcurrency, async task => {
+            try {
+              await fsp.copyFile(task.item.path, task.tempPath, fs.constants.COPYFILE_EXCL);
+              task.copied = true;
+            } catch (error) {
+              await fsp.unlink(task.tempPath).catch(() => {});
+              recordFailure(task, error);
+            }
+          });
+          const active = batch.filter(task => task.copied);
+          if (!active.length) {
+            flushProgress();
+            continue;
+          }
+
+          const engineResult = await runEngine(
+            enginePath,
+            ['-o', '4', '--threads', String(processors), '--preserve', '--nx', '--json', '--', ...active.map(task => task.tempPath)],
+            state
+          );
+          engineRuns += 1;
+          if (state.cancelled) {
+            await mapWithConcurrency(active, preparationConcurrency, task => fsp.unlink(task.tempPath).catch(() => {}));
+            break;
+          }
+
+          let engineEntries;
+          try {
+            engineEntries = parseBatchResults(engineResult.stdout);
+          } catch (error) {
+            engineEntries = new Map();
+            for (const task of active) task.batchError = new Error(
+              `The batch engine returned unreadable results${engineResult.output ? `: ${engineResult.output}` : '.'}`
+            );
+          }
+          await mapWithConcurrency(active, verificationConcurrency, async task => {
+            if (task.batchError) {
+              await fsp.unlink(task.tempPath).catch(() => {});
+              recordFailure(task, task.batchError);
+              return;
+            }
+            await finalize(task, engineEntries.get(path.resolve(task.tempPath).toLowerCase()));
+          });
+          flushProgress();
+        }
+      } finally {
+        await fsp.rm(batchDirectory, { recursive: true, force: true });
+      }
+    }
+  }
+
+  flushProgress();
+  const completedResults = results.filter(Boolean);
+  return {
+    cancelled: state.cancelled,
+    total: items.length,
+    completed: completedResults.length,
+    compressed,
+    kept,
+    failed,
+    savedBytes,
+    beforeBytes,
+    afterBytes,
+    reductionPercent: beforeBytes > 0 ? Math.round((savedBytes / beforeBytes) * 10000) / 100 : 0,
+    recoveryFiles,
+    outputDirectory,
+    mode: 'batched',
+    workers: 1,
+    threadsPerWorker: processors,
+    engineRuns,
+    results: completedResults
+  };
+}
+
 async function compressFiles(options, enginePath, state, onProgress) {
   const rawItems = Array.isArray(options.items) ? options.items : [];
   const seen = new Set();
@@ -284,6 +627,9 @@ async function compressFiles(options, enginePath, state, onProgress) {
   const outputDirectory = overwrite ? null : path.resolve(options.outputDirectory || '');
   if (!overwrite && !options.outputDirectory) throw new Error('Choose an output directory first.');
   if (outputDirectory) await fsp.mkdir(outputDirectory, { recursive: true });
+  if (items.length >= BATCH_MODE_MINIMUM) {
+    return compressFilesBatched({ items, overwrite, outputDirectory, enginePath, state, onProgress });
+  }
 
   const plan = createCompressionPlan(items.length);
   const claimedOutputs = new Set();
@@ -437,6 +783,8 @@ async function compressFiles(options, enginePath, state, onProgress) {
     reductionPercent: beforeBytes > 0 ? Math.round((savedBytes / beforeBytes) * 10000) / 100 : 0,
     recoveryFiles,
     outputDirectory,
+    mode: 'parallel',
+    engineRuns: completedResults.length,
     workers: plan.workers,
     threadsPerWorker: plan.threadsPerWorker,
     results: completedResults
@@ -447,6 +795,7 @@ module.exports = {
   PNG_SIGNATURE,
   cancelActiveEngines,
   compressFiles,
+  createStagingBatches,
   createCompressionPlan,
   describeFiles,
   describePaths,

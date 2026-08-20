@@ -18,12 +18,17 @@ const elements = {
 };
 
 let items = [];
+const itemsByPath = new Map();
 const selected = new Set();
+const ROW_HEIGHT = 27;
+const ROW_OVERSCAN = 10;
 let running = false;
 let scanning = false;
 let cancelling = false;
 let outputDirectory = null;
 let toastTimer = null;
+let totalInputBytes = 0;
+let renderQueued = false;
 
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes)) return '—';
@@ -67,44 +72,75 @@ function statusClass(status) {
   return 'muted';
 }
 
+function rebuildItemIndex() {
+  itemsByPath.clear();
+  for (const item of items) itemsByPath.set(item.path.toLowerCase(), item);
+}
+
+function createFileRow(item) {
+  const row = document.createElement('div');
+  row.className = `file-row${selected.has(item.path) ? ' selected' : ''}`;
+  row.dataset.path = item.path;
+  row.title = item.path;
+
+  const file = document.createElement('span');
+  file.textContent = item.path;
+  const original = document.createElement('span');
+  original.textContent = formatBytes(item.size);
+  const optimised = document.createElement('span');
+  optimised.textContent = item.outputBytes == null ? '—' : formatBytes(item.outputBytes);
+  const status = document.createElement('span');
+  status.textContent = item.status || (item.valid ? 'Ready' : 'Invalid PNG');
+  status.className = statusClass(status.textContent);
+  if (item.error) status.title = item.error;
+  row.append(file, original, optimised, status);
+
+  row.addEventListener('click', event => {
+    if (running) return;
+    if (event.ctrlKey) {
+      if (selected.has(item.path)) selected.delete(item.path);
+      else selected.add(item.path);
+    } else {
+      selected.clear();
+      selected.add(item.path);
+    }
+    renderList();
+    updateControls();
+  });
+  return row;
+}
+
+function renderVisibleRows() {
+  elements.list.querySelectorAll('.file-row, .list-spacer').forEach(row => row.remove());
+  if (!items.length) return;
+  const viewportHeight = elements.list.clientHeight || 400;
+  const start = Math.max(0, Math.floor(elements.list.scrollTop / ROW_HEIGHT) - ROW_OVERSCAN);
+  const end = Math.min(items.length, Math.ceil((elements.list.scrollTop + viewportHeight) / ROW_HEIGHT) + ROW_OVERSCAN);
+  const topSpacer = document.createElement('div');
+  topSpacer.className = 'list-spacer';
+  topSpacer.style.height = `${start * ROW_HEIGHT}px`;
+  const bottomSpacer = document.createElement('div');
+  bottomSpacer.className = 'list-spacer';
+  bottomSpacer.style.height = `${(items.length - end) * ROW_HEIGHT}px`;
+  elements.list.appendChild(topSpacer);
+  for (let index = start; index < end; index += 1) elements.list.appendChild(createFileRow(items[index]));
+  elements.list.appendChild(bottomSpacer);
+}
+
 function renderList() {
-  elements.list.querySelectorAll('.file-row').forEach(row => row.remove());
   elements.empty.classList.toggle('hidden', items.length > 0);
-  for (const item of items) {
-    const row = document.createElement('div');
-    row.className = `file-row${selected.has(item.path) ? ' selected' : ''}`;
-    row.dataset.path = item.path;
-    row.title = item.path;
-
-    const file = document.createElement('span');
-    file.textContent = item.path;
-    const original = document.createElement('span');
-    original.textContent = formatBytes(item.size);
-    const optimised = document.createElement('span');
-    optimised.textContent = item.outputBytes == null ? '—' : formatBytes(item.outputBytes);
-    const status = document.createElement('span');
-    status.textContent = item.status || (item.valid ? 'Ready' : 'Invalid PNG');
-    status.className = statusClass(status.textContent);
-    if (item.error) status.title = item.error;
-    row.append(file, original, optimised, status);
-
-    row.addEventListener('click', event => {
-      if (running) return;
-      if (event.ctrlKey) {
-        if (selected.has(item.path)) selected.delete(item.path);
-        else selected.add(item.path);
-      } else {
-        selected.clear();
-        selected.add(item.path);
-      }
-      renderList();
-      updateControls();
-    });
-    elements.list.appendChild(row);
-  }
-  const total = items.reduce((sum, item) => sum + item.size, 0);
-  elements.summary.textContent = `${items.length.toLocaleString()} file${items.length === 1 ? '' : 's'} · ${formatBytes(total)}`;
+  renderVisibleRows();
+  elements.summary.textContent = `${items.length.toLocaleString()} file${items.length === 1 ? '' : 's'} · ${formatBytes(totalInputBytes)}`;
   updateControls();
+}
+
+function scheduleRenderList() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    renderList();
+  });
 }
 
 function addItems(newItems) {
@@ -113,10 +149,13 @@ function addItems(newItems) {
   for (const item of newItems) {
     if (known.has(item.path.toLowerCase())) continue;
     known.add(item.path.toLowerCase());
-    items.push({ ...item, outputBytes: null, status: item.valid ? 'Ready' : 'Invalid PNG', error: null });
+    const addedItem = { ...item, outputBytes: null, status: item.valid ? 'Ready' : 'Invalid PNG', error: null };
+    items.push(addedItem);
+    itemsByPath.set(addedItem.path.toLowerCase(), addedItem);
+    totalInputBytes += addedItem.size;
     added += 1;
   }
-  items.sort((a, b) => a.path.localeCompare(b.path));
+  items.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   renderList();
   if (added === 0 && newItems.length) showToast('Those files are already in the list.');
 }
@@ -211,8 +250,12 @@ elements.overwrite.addEventListener('change', updateControls);
 elements.remove.addEventListener('click', () => {
   items = items.filter(item => !selected.has(item.path));
   selected.clear();
+  rebuildItemIndex();
+  totalInputBytes = items.reduce((sum, item) => sum + item.size, 0);
   renderList();
 });
+
+elements.list.addEventListener('scroll', scheduleRenderList);
 
 elements.go.addEventListener('click', async () => {
   if (running) {
@@ -228,6 +271,7 @@ elements.go.addEventListener('click', async () => {
   selected.clear();
   elements.progress.style.width = '0%';
   items = items.map(item => ({ ...item, outputBytes: null, status: item.valid ? 'Queued' : 'Invalid PNG', error: null }));
+  rebuildItemIndex();
   renderList();
   updateControls();
 
@@ -253,14 +297,16 @@ elements.go.addEventListener('click', async () => {
 });
 
 window.pngoo.onProgress(progress => {
-  const item = items.find(entry => entry.path === progress.result.path);
-  if (item) {
-    item.outputBytes = progress.result.outputBytes;
-    item.status = progress.result.status;
-    item.error = progress.result.error;
+  const updates = Array.isArray(progress.results) ? progress.results : [progress.result];
+  for (const update of updates) {
+    const item = itemsByPath.get(update.path.toLowerCase());
+    if (!item) continue;
+    item.outputBytes = update.outputBytes;
+    item.status = update.status;
+    item.error = update.error;
   }
   elements.progress.style.width = `${Math.round((progress.current / progress.total) * 100)}%`;
-  renderList();
+  scheduleRenderList();
 });
 
 renderList();

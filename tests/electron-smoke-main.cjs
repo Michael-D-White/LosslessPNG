@@ -31,6 +31,17 @@ app.whenReady().then(async () => {
     await new Promise(resolve => setTimeout(resolve, 350));
     const checks = await window.webContents.executeJavaScript(`(async () => {
       const droppedItems = await window.pngoo.describeDroppedPaths([${JSON.stringify(dropRoot)}]);
+      const virtualStarted = Date.now();
+      const virtualItems = Array.from({ length: 392551 }, (_, index) => ({
+        path: 'C:\\\\virtual\\\\texture-' + String(index).padStart(6, '0') + '.png',
+        root: 'C:\\\\virtual',
+        name: 'texture-' + index + '.png',
+        size: 1024,
+        valid: true,
+        width: 16,
+        height: 16
+      }));
+      addItems(virtualItems);
       return {
         title: document.title,
         mode: document.querySelector('.lossless')?.textContent.trim(),
@@ -41,6 +52,9 @@ app.whenReady().then(async () => {
         dropHint: document.querySelector('#emptyState span')?.textContent,
         droppedItemCount: droppedItems.length,
         droppedItemRoot: droppedItems[0]?.root,
+        virtualRowCount: document.querySelectorAll('.file-row').length,
+        virtualSummary: document.querySelector('#summaryText')?.textContent,
+        virtualElapsedMs: Date.now() - virtualStarted,
         bodyWidth: document.body.scrollWidth,
         bodyHeight: document.body.scrollHeight
       };
@@ -62,7 +76,9 @@ app.whenReady().then(async () => {
       !checks.dropBridgeReady ||
       !checks.dropHint?.includes('Drop a folder') ||
       checks.droppedItemCount !== 1 ||
-      checks.droppedItemRoot !== dropRoot
+      checks.droppedItemRoot !== dropRoot ||
+      checks.virtualRowCount >= 100 ||
+      !checks.virtualSummary?.includes('392,551 files')
     ) {
       process.exitCode = 1;
     }

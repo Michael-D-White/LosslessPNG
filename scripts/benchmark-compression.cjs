@@ -5,6 +5,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const { spawn } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
+const { compressFiles } = require('../electron/compression.cjs');
 
 function crc32(buffer) {
   let crc = 0xffffffff;
@@ -84,6 +85,40 @@ async function benchmark(engine, inputs, root, variant) {
   return { ...variant, elapsedMs, outputBytes };
 }
 
+function commandLineBatches(files, maximumCharacters = 24000, maximumFiles = 256) {
+  const batches = [];
+  let current = [];
+  let characters = 0;
+  for (const file of files) {
+    const cost = file.length + 3;
+    if (current.length && (current.length >= maximumFiles || characters + cost > maximumCharacters)) {
+      batches.push(current);
+      current = [];
+      characters = 0;
+    }
+    current.push(file);
+    characters += cost;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+async function benchmarkBatched(engine, inputs, root, variant) {
+  const outputRoot = path.join(root, variant.name);
+  await fsp.mkdir(outputRoot);
+  const copies = inputs.map((_, index) => path.join(outputRoot, `${index}.png`));
+  const started = performance.now();
+  for (let index = 0; index < inputs.length; index += 1) await fsp.copyFile(inputs[index], copies[index]);
+  const batches = commandLineBatches(copies);
+  for (const batch of batches) {
+    await run(engine, ['-o', String(variant.level), '--threads', String(variant.threads), '--nx', '--quiet', '--', ...batch]);
+  }
+  const elapsedMs = Math.round(performance.now() - started);
+  let outputBytes = 0;
+  for (const file of copies) outputBytes += (await fsp.stat(file)).size;
+  return { ...variant, batches: batches.length, elapsedMs, outputBytes };
+}
+
 async function main() {
   const engine = path.join(__dirname, '..', 'resources', 'bin', 'oxipng', 'oxipng.exe');
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-benchmark-'));
@@ -104,7 +139,42 @@ async function main() {
     ];
     const results = [];
     for (const variant of variants) results.push(await benchmark(engine, inputs, root, variant));
-    process.stdout.write(JSON.stringify(results, null, 2));
+
+    const tinyInputs = [];
+    for (let index = 0; index < 500; index += 1) {
+      const file = path.join(root, `tiny-${index}.png`);
+      await fsp.writeFile(file, makePng(32, 32, index));
+      tinyInputs.push(file);
+    }
+    const tinyResults = [
+      await benchmark(engine, tinyInputs, root, { name: 'tiny-per-file-parallel-4', level: 4, workers: 4, threads: 5 }),
+      await benchmarkBatched(engine, tinyInputs, root, { name: 'tiny-batched-o4', level: 4, workers: 1, threads: 20 }),
+      await benchmarkBatched(engine, tinyInputs, root, { name: 'tiny-batched-o2', level: 2, workers: 1, threads: 20 })
+    ];
+    const applicationRoot = path.join(root, 'application-batch');
+    await fsp.mkdir(applicationRoot);
+    const applicationItems = [];
+    for (let index = 0; index < tinyInputs.length; index += 1) {
+      const file = path.join(applicationRoot, `${index}.png`);
+      await fsp.copyFile(tinyInputs[index], file);
+      applicationItems.push({ path: file, root: applicationRoot });
+    }
+    const applicationStarted = performance.now();
+    const applicationResult = await compressFiles(
+      { items: applicationItems, overwrite: true },
+      engine,
+      { cancelled: false, child: null, children: new Set() },
+      () => {}
+    );
+    const applicationBatch = {
+      elapsedMs: Math.round(performance.now() - applicationStarted),
+      completed: applicationResult.completed,
+      compressed: applicationResult.compressed,
+      failed: applicationResult.failed,
+      engineRuns: applicationResult.engineRuns,
+      mode: applicationResult.mode
+    };
+    process.stdout.write(JSON.stringify({ largeImages: results, tinyImages: tinyResults, applicationBatch }, null, 2));
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

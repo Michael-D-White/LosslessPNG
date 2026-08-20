@@ -8,16 +8,17 @@ LosslessPNG is a compact dark-mode Windows application for compressing PNG image
 
 ## Download
 
-Download the latest verified build from the [v1.1.2 release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.2):
+Download the latest verified build from the [v1.1.3 release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.3):
 
-- [Windows installer](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.2/PNGoo-Setup-1.1.2-x64.exe)
-- [Portable ZIP](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.2/PNGoo-Portable-1.1.2-x64.zip)
+- [Windows installer](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.3/PNGoo-Setup-1.1.3-x64.exe)
+- [Portable ZIP](https://github.com/Michael-D-White/LosslessPNG/releases/download/v1.1.3/PNGoo-Portable-1.1.3-x64.zip)
 
 The portable edition requires no installation. Extract the entire ZIP, then run `PNGoo Desktop.exe` from the extracted folder.
 
 ## Features
 
 - Strict lossless PNG recompression with Oxipng 10.2.0
+- Controlled parallel compression that automatically balances workers across the available CPU threads
 - Fixed compression settings, so there is nothing technical to configure
 - Add individual PNG files or scan a folder and its subfolders
 - Drag and drop whole folders or PNG files anywhere onto the app
@@ -69,16 +70,18 @@ npm run build
 
 The finished installer and portable ZIP are written to the `dist` directory. The repository includes the Windows Oxipng binary required by the application and its accompanying license.
 
+To compare the sequential baseline with the balanced parallel plans on your own computer, run `npm run benchmark:compression`.
+
 ## Verification
 
-Version 1.1.2 passed:
+Version 1.1.3 passed:
 
 - Seven automated compression and recovery tests
 - Portable application launch testing
 - Installer installation, installed launch, and uninstallation testing
 - Microsoft Defender scanning of both release packages
 
-The SHA-256 hashes of the published files are included on the [release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.2).
+The SHA-256 hashes of the published files are included on the [release page](https://github.com/Michael-D-White/LosslessPNG/releases/tag/v1.1.3).
 
 ## License
 

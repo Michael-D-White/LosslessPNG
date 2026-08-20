@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } = require('electron');
-const { compressFiles, describeFiles, describePaths, listPngFiles } = require('./compression.cjs');
+const { cancelActiveEngines, compressFiles, describeFiles, describePaths, listPngFiles } = require('./compression.cjs');
 
 let mainWindow;
 let activeState = null;
@@ -109,7 +109,7 @@ ipcMain.handle('output:pick', async () => {
 
 ipcMain.handle('compression:start', async (event, payload) => {
   if (activeState) throw new Error('Another compression run is already active.');
-  activeState = { cancelled: false, child: null };
+  activeState = { cancelled: false, child: null, children: new Set() };
   try {
     return await compressFiles(payload, enginePath(), activeState, progress => {
       if (!event.sender.isDestroyed()) event.sender.send('compression:progress', progress);
@@ -121,8 +121,7 @@ ipcMain.handle('compression:start', async (event, payload) => {
 
 ipcMain.on('compression:cancel', () => {
   if (!activeState) return;
-  activeState.cancelled = true;
-  if (activeState.child) activeState.child.kill();
+  cancelActiveEngines(activeState);
 });
 
 ipcMain.handle('path:open', async (_event, targetPath) => {

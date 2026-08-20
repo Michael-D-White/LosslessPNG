@@ -7,7 +7,9 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const { spawnSync } = require('node:child_process');
 const {
+  cancelActiveEngines,
   compressFiles,
+  createCompressionPlan,
   describeFiles,
   describePaths,
   listPngFiles,
@@ -105,6 +107,26 @@ function decodeRgbaPng(buffer) {
 }
 
 const engine = path.join(__dirname, '..', 'resources', 'bin', 'oxipng', 'oxipng.exe');
+
+test('parallel plan balances workers without oversubscribing logical processors', () => {
+  assert.deepEqual(createCompressionPlan(12, 20), { workers: 4, threadsPerWorker: 5 });
+  assert.deepEqual(createCompressionPlan(2, 20), { workers: 2, threadsPerWorker: 10 });
+  assert.deepEqual(createCompressionPlan(12, 4), { workers: 1, threadsPerWorker: 4 });
+});
+
+test('cancellation stops every active compression worker', () => {
+  let kills = 0;
+  const first = { killed: false, kill() { this.killed = true; kills += 1; } };
+  const second = { killed: false, kill() { this.killed = true; kills += 1; } };
+  const state = { cancelled: false, child: second, children: new Set([first, second]) };
+
+  cancelActiveEngines(state);
+
+  assert.equal(state.cancelled, true);
+  assert.equal(kills, 2);
+  assert.equal(first.killed, true);
+  assert.equal(second.killed, true);
+});
 
 test('recursive discovery and file inspection reject disguised PNG files', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-test-'));
@@ -274,4 +296,26 @@ test('separate-output workflow preserves the source and writes beneath the chose
   assert.deepEqual(await fsp.readFile(source), original);
   assert.equal(fs.existsSync(result.results[0].destination), true);
   assert.deepEqual(decodeRgbaPng(await fsp.readFile(result.results[0].destination)), decodeRgbaPng(original));
+});
+
+test('parallel workflow completes every item and reports monotonic progress', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pngoo-parallel-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const items = [];
+  for (let index = 0; index < 8; index += 1) {
+    const file = path.join(root, `image-${index}.png`);
+    await fsp.writeFile(file, makePng(192, 144));
+    items.push({ path: file, root });
+  }
+  const progress = [];
+  const state = { cancelled: false, child: null, children: new Set() };
+  const result = await compressFiles({ items, overwrite: true }, engine, state, update => progress.push(update.current));
+  const expectedPlan = createCompressionPlan(items.length);
+
+  assert.equal(result.completed, 8);
+  assert.equal(result.failed, 0);
+  assert.equal(result.workers, expectedPlan.workers);
+  assert.equal(result.threadsPerWorker, expectedPlan.threadsPerWorker);
+  assert.deepEqual(progress, [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(state.children.size, 0);
 });

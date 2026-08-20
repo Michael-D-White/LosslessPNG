@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const { spawn } = require('node:child_process');
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -110,17 +111,44 @@ function runEngine(enginePath, args, state) {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    if (!(state.children instanceof Set)) state.children = new Set();
+    state.children.add(child);
     state.child = child;
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk.toString(); });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.on('error', reject);
+    const cleanup = () => {
+      state.children.delete(child);
+      if (state.child === child) state.child = null;
+    };
+    child.on('error', error => {
+      cleanup();
+      reject(error);
+    });
     child.on('close', code => {
-      state.child = null;
+      cleanup();
       resolve({ code, output: `${stdout} ${stderr}`.trim() });
     });
   });
+}
+
+function createCompressionPlan(itemCount, logicalProcessors = os.availableParallelism?.() || os.cpus().length || 1) {
+  const processors = Math.max(1, Math.floor(logicalProcessors));
+  const workers = Math.max(1, Math.min(itemCount, 4, Math.floor(processors / 4) || 1));
+  return {
+    workers,
+    threadsPerWorker: Math.max(1, Math.floor(processors / workers))
+  };
+}
+
+function cancelActiveEngines(state) {
+  state.cancelled = true;
+  const children = new Set(state.children instanceof Set ? state.children : []);
+  if (state.child) children.add(state.child);
+  for (const child of children) {
+    if (child && !child.killed) child.kill();
+  }
 }
 
 function timestamp() {
@@ -227,12 +255,16 @@ async function uniqueOutputPath(outputDirectory, root, file, claimed) {
   const parsed = path.parse(desired);
   let candidate = desired;
   let index = 2;
-  while (claimed.has(candidate.toLowerCase()) || await exists(candidate)) {
+  while (true) {
+    const key = candidate.toLowerCase();
+    if (!claimed.has(key)) {
+      claimed.add(key);
+      if (!(await exists(candidate))) return candidate;
+      claimed.delete(key);
+    }
     candidate = path.join(parsed.dir, `${parsed.name} (${index})${parsed.ext}`);
     index += 1;
   }
-  claimed.add(candidate.toLowerCase());
-  return candidate;
 }
 
 async function compressFiles(options, enginePath, state, onProgress) {
@@ -253,9 +285,12 @@ async function compressFiles(options, enginePath, state, onProgress) {
   if (!overwrite && !options.outputDirectory) throw new Error('Choose an output directory first.');
   if (outputDirectory) await fsp.mkdir(outputDirectory, { recursive: true });
 
+  const plan = createCompressionPlan(items.length);
   const claimedOutputs = new Set();
-  const results = [];
+  const results = new Array(items.length);
   const recoveryFiles = [];
+  let nextIndex = 0;
+  let completed = 0;
   let beforeBytes = 0;
   let afterBytes = 0;
   let compressed = 0;
@@ -263,8 +298,8 @@ async function compressFiles(options, enginePath, state, onProgress) {
   let failed = 0;
   let savedBytes = 0;
 
-  for (let index = 0; index < items.length; index += 1) {
-    if (state.cancelled) break;
+  async function processItem(index) {
+    if (state.cancelled) return;
     const item = items[index];
     let originalStat;
     let tempPath = null;
@@ -276,9 +311,11 @@ async function compressFiles(options, enginePath, state, onProgress) {
 
     try {
       originalStat = await fsp.stat(item.path);
-      const originalHash = await sha256File(item.path);
       beforeBytes += originalStat.size;
-      const inputMetadata = await readPngMetadata(item.path);
+      const [originalHash, inputMetadata] = await Promise.all([
+        sha256File(item.path),
+        readPngMetadata(item.path)
+      ]);
       if (!inputMetadata) throw new Error('File contents are not valid PNG data.');
 
       if (!overwrite) {
@@ -287,17 +324,18 @@ async function compressFiles(options, enginePath, state, onProgress) {
       await fsp.mkdir(path.dirname(destination), { recursive: true });
       const token = `${process.pid}-${Date.now()}-${index}`;
       tempPath = path.join(path.dirname(destination), `${path.basename(destination, path.extname(destination))}.pngoo-temp-${token}.png`);
+      if (state.cancelled) return;
 
       // Strict lossless mode: recompress only. No colour, palette, bit-depth,
       // alpha, interlace, or metadata-stripping transformations are enabled.
       const engineResult = await runEngine(
         enginePath,
-        ['-o', '4', '--preserve', '--nx', '--quiet', '--out', tempPath, '--', item.path],
+        ['-o', '4', '--threads', String(plan.threadsPerWorker), '--preserve', '--nx', '--quiet', '--out', tempPath, '--', item.path],
         state
       );
       if (state.cancelled) {
         if (await exists(tempPath)) await fsp.unlink(tempPath);
-        break;
+        return;
       }
       if (engineResult.code !== 0) {
         throw new Error(`Lossless engine returned code ${engineResult.code}${engineResult.output ? `: ${engineResult.output}` : ''}`);
@@ -361,9 +399,10 @@ async function compressFiles(options, enginePath, state, onProgress) {
       recoveryPath,
       destination: status === 'Optimised' ? destination : null
     };
-    results.push(result);
+    results[index] = result;
+    completed += 1;
     onProgress({
-      current: index + 1,
+      current: completed,
       total: items.length,
       compressed,
       kept,
@@ -373,10 +412,22 @@ async function compressFiles(options, enginePath, state, onProgress) {
     });
   }
 
+  async function worker() {
+    while (!state.cancelled) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      await processItem(index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: plan.workers }, worker));
+  const completedResults = results.filter(Boolean);
+
   return {
     cancelled: state.cancelled,
     total: items.length,
-    completed: results.length,
+    completed: completedResults.length,
     compressed,
     kept,
     failed,
@@ -386,13 +437,17 @@ async function compressFiles(options, enginePath, state, onProgress) {
     reductionPercent: beforeBytes > 0 ? Math.round((savedBytes / beforeBytes) * 10000) / 100 : 0,
     recoveryFiles,
     outputDirectory,
-    results
+    workers: plan.workers,
+    threadsPerWorker: plan.threadsPerWorker,
+    results: completedResults
   };
 }
 
 module.exports = {
   PNG_SIGNATURE,
+  cancelActiveEngines,
   compressFiles,
+  createCompressionPlan,
   describeFiles,
   describePaths,
   listPngFiles,
